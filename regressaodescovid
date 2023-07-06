@@ -1,0 +1,263 @@
+library( stargazer )
+library( dplyr )
+library( pander )
+library(readxl)
+library(tidyverse)# ggplot(), %>%, mutate(), and friends
+library(broom) #Converte modelos em data frame
+library(ggplot2)
+library(rddtools)
+library(magrittr)
+library(rdrobust)  # For robust nonparametric regression discontinuity
+library(rddensity)  # For nonparametric regression discontinuity density tests
+library(modelsummary)  # Create side-by-side regression tables
+library(rdd)
+
+#Entrando dados
+attach(dados)
+View(dados)
+
+#Selecionando os casos maiores que 0
+dados<- dados %>% filter(obitosdia>=1)
+
+
+
+##################TESTANDO MANEIRA 1 DE RDD##########################
+#PARA UMA MESMA INCLINAÇÃO
+dados %>% 
+  ggplot(aes(x = dia, y = obitosdia)) + 
+  geom_point() +
+  geom_vline(xintercept = 59) + 
+  labs(y = "Obitos diários SarsCov2", x = "Dias corridos")
+
+dados %>% 
+  mutate(D = ifelse(dia >= 59, 1, 0)) %$% 
+  lm(obitosdia ~ lockdown + I(dia - 59)) %>% 
+  summary()
+
+#PARA INCLINAÇÃO DIFERENTE
+
+dados %>% 
+  mutate(D = ifelse(dia >= 59, 1, 0)) %$% 
+  lm(obitosdia ~ lockdown * I(dia - 59)) %>% 
+  summary()
+
+#PLOTANDO MODELO RD
+
+dados %>% 
+  select(dia, obitosdia) %>% 
+  mutate(D = as.factor(ifelse(dia >= 59, 1, 0))) %>% 
+  ggplot(aes(x = dia, y = obitosdia)) +
+  geom_point(aes(color = D)) + 
+  geom_smooth(method = "lm")  
+
+dados %>% 
+  select(dia, obitosdia) %>% 
+  mutate(D = as.factor(ifelse(dia >= 59, 1, 0))) %>% 
+  ggplot(aes(x = dia, y = obitosdia, color = D)) +
+  geom_point() + 
+  geom_smooth(method = "lm")
+
+#################### TESTANDO MODELO 2 ################
+# O LIMITE DEFINIDO FOI DE 59 DIAS. ISTO DEVIDO AO TEMPO DE EFETIVIDADE PÓS LOCKDOWN
+
+#TESTE ESTATISTICO REAL
+#USA VARIÁVEL EM EXECUÇÃO E PONTO DE CORTE
+
+# Observe esta sintaxe dados$dia. Esta é uma maneira de o R acessar
+# colunas em quadros de dados --- significa "use a coluna dia no
+# dados data frame". A sintaxe geral para ele é data_frame$column_name
+
+test_density <- rddensity(dados$dia, c = 59)
+summary(test_density)
+
+#PLotando o grafico de densidade
+# A sintaxe para rdplotdensity é meio confusa. Você tem que alimentar o
+# teste rddensity(), e então você tem que especificar x, que é a sua variavel
+# O argumento de tipo informa ao gráfico para mostrar os pontos e
+# linhas---sem isso, mostrará apenas linhas.
+#
+# Por fim, observe como atribuí a saída de rdplotdensity a uma variável chamada
+# plot_density_test. Em teoria, isso deve fazer com que não mostre nada -todas
+# as saídas devem ir para esse objeto. Por causa de um bug no rdplotdensity,
+# porém, mostrará um gráfico automaticamente, mesmo atribuindo-o a uma variável. Se não
+# atribuí-lo a uma variável, você verá duas tramas idênticas ao tricotar, que é
+# chato. Portanto, salvamos como uma variável para ocultar a saída, mas obtemos a saída
+# para um único gráfico de qualquer maneira. 
+
+plot_density_test <- rdplotdensity(rdd = test_density, 
+                                   X = dados$obitosdia, 
+                                   type = "both")  #Para add pontos e linhas
+
+
+dados %>% 
+  ggplot(aes(x = dia, y = obitosdia)) + 
+  geom_point() +
+  geom_vline(xintercept = 59, color = "red", size = 1, linetype = "dashed") + 
+  annotate("text", x = 20.4, y = 105, label = "",
+           size=4) +
+  labs(y = "Obitos diários SARSCOV2",
+       x = "Dias corridos")
+
+#Modelo oficial
+lm_same_slope <- dados %>% 
+  mutate(threshold = ifelse(dia >= 59, 1, 0)) %$% 
+  lm(obitosdia ~ threshold + I(dia - 59))
+
+summary(lm_same_slope) 
+
+#Grafico
+
+dados %>%
+  select(dia, obitosdia) %>%
+  mutate(threshold = as.factor(ifelse(dia >= 59, 1, 0))) %>%
+  ggplot(aes(x = dia, y = obitosdia)) +
+  geom_point(aes(color = threshold)) +
+  geom_smooth(method = "lm", se = FALSE) +
+  scale_color_brewer(palette = "Accent") +
+  guides(color = FALSE) +
+  geom_vline(xintercept = 59, color = "red",
+             size = 1, linetype = "dashed") +
+  labs(y = "Obitos diários SARSCoV2",
+       x = "Dias corridos")
+
+#Estimando para outras inclinações para termos quadráticos
+#Abaixo, estou modelando uma relação quadrática entre dia e obitos diários
+#O termo quadrático entra na fórmula através da função I(). 
+#Como na seção anterior, diferentes inclinações ao redor do corte são usadas.
+
+lm_quadratic <- dados %>% 
+  mutate(threshold = ifelse(dia >= 59, 1, 0)) %$% 
+  lm(obitosdia ~ threshold + I(dia - 59) + I((dia -59)^2) + threshold:I(dia - 59) +
+       threshold:I((dia - 59)^2))
+
+summary(lm_quadratic)
+
+#Em média, a qtd de obitos que decresce agora é de 61,33 pontos menor
+#O coeficiente do limite da variável threshold é o efeito médio do tratamento.
+
+#Grafico 
+
+dados %>%
+  select(dia, obitosdia) %>%
+  mutate(threshold = as.factor(ifelse(dia >= 59, 1, 0))) %>%
+  ggplot(aes(x = dia, y = obitosdia, color = threshold)) +
+  geom_point() +
+  geom_smooth(method = "lm",
+              formula = y ~ x + I(x ^ 2),
+              se = FALSE) +
+  scale_color_brewer(palette = "Accent") +
+  guides(color = FALSE) +
+  geom_vline(xintercept = 59, color = "red",
+             size = 1, linetype = "dashed") +
+  labs(y = "Obitos diários",
+       x = "Dias corridos")
+
+#Analise sensitiva
+#Além disso, é aconselhável verificar a sensibilidade dos resultados em relação
+#à limitação do tamanho da amostra.
+#Em vez de usar todos os dias, estou usando apenas os dias antecedentes e
+#POsteriores, como dia 57 e 61. Além disso, estou removendo o termo quadrático.
+
+
+test_density <- rddensity(dados$dia, c = 59)
+summary(test_density)
+
+
+plot_density_test <- rdplotdensity(rdd = test_density, 
+                                   X = dados$dia, 
+                                   type = "both")  # This adds both points and lines
+#ESTIMAÇÃO PARAMETRICA
+#rEGRESSÃO LINEAR 
+
+tutoring_centered <- dados %>% 
+  mutate(dados_centrais = dia - 59)
+
+model_simple <- lm(obitosdia ~ dados_centrais + lockdown,
+                   data = tutoring_centered)
+tidy(model_simple)
+
+#Separando por bandas
+
+model_bw_10 <- lm(obitosdia ~ dados_centrais + lockdown,
+                  data = filter(tutoring_centered,
+                                dados_centrais >= -10 & 
+                                  dados_centrais <= 10))
+tidy(model_bw_10)
+
+model_bw_5 <- lm(obitosdia ~ dados_centrais + lockdown,
+                  data = filter(tutoring_centered,
+                                dados_centrais >= -5 & 
+                                  dados_centrais <= 5))
+tidy(model_bw_5)
+
+
+modelsummary(list("Full data" = model_simple, 
+                  "Bandwidth = 10" = model_bw_10, 
+                  "Bandwidth = 5" = model_bw_5))
+
+
+#Nao parametrico
+
+#Observe como temos que usar a sintaxe dados$dia aqui. Certifique-se também
+#Que seja definido o ponto de corte
+rdrobust(y = dados$obitosdia, x = dados$dia, c = 59) %>% 
+  summary()
+
+#plotando o grafico
+rdplot(y = dados$obitosdia, x = dados$dia, c = 59)
+
+#Isso diz para usar a versão mserd, que de acordo com o arquivo de ajuda para
+# rdbwselect significa "o seletor de largura de banda ideal de erro quadrado 
+#médio para efeitos do tratamento em RD ". 
+
+rdbwselect(y = dados$obitosdia, x = dados$dia, c = 59) %>% 
+  summary()
+
+#Testando as larguras das bandas
+rdbwselect(y = dados$obitosdia, x = dados$dia, c = 59, all = TRUE) %>% 
+  summary()
+
+#Outra abordagem comum para a análise de sensibilidade é usar a largura de banda
+#ideal, duas vezes o ideal e metade do ideal (no nosso caso, 66, 132 e 33) e ver
+#se a estimativa muda substancialmente. Use o argumento "h" para especificar sua 
+#própria largura de banda
+
+
+rdrobust(y = dados$obitosdia, x = dados$dia, c = 59, h = 66.914 ) %>% 
+  summary()
+
+rdrobust(y = dados$obitosdia, x = dados$dia, c = 59, h = 66.914  * 2) %>% 
+  summary()
+
+rdrobust(y = dados$obitosdia, x = dados$dia, c = 59, h = 66.914  / 2) %>% 
+  summary()
+
+#Testando para cada tipo de Kernel
+
+rdrobust(y = dados$obitosdia, x = dados$dia, c = 59, kernel = "triangular") %>% 
+  summary()  # Default
+
+rdrobust(y = dados$obitosdia, x = dados$dia, c = 59, kernel = "epanechnikov") %>% 
+  summary()
+
+rdrobust(y = dados$obitosdia, x = dados$dia, c = 59, kernel = "uniform") %>% 
+  summary()
+
+#Por fim, comparar os efeitos
+
+library(tidyverse)
+library(haven)
+library(estimatr)
+library(texreg)
+library(latex2exp)
+
+ggplot(dados, aes(x = dia, y = obitosdia, color = tutoring)) +
+  # Make points small and semi-transparent since there are lots of them
+  geom_point(size = 0.5, alpha = 0.5,
+             position = position_jitter(width = 0, height = 0.25, seed = 1234)) +
+  # Add vertical line
+  geom_vline(xintercept = 59) +
+  # Add labels
+  labs(x = "Entrance exam score", y = "Participated in tutoring program") +
+  # Turn off the color legend, since it's redundant
+  guides(color = "none")
